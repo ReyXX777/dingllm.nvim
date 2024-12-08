@@ -36,7 +36,7 @@ function M.get_visual_selection()
     end
   end
 
-  if vim.fn.mode() == '\22' then
+  if vim.fn.mode() == "\x16" then  -- Corrected block visual mode detection
     local lines = {}
     if srow > erow then
       srow, erow = erow, srow
@@ -54,6 +54,10 @@ end
 function M.make_anthropic_spec_curl_args(opts, prompt, system_prompt)
   local url = opts.url
   local api_key = opts.api_key_name and get_api_key(opts.api_key_name)
+  if not api_key then
+    print("API key not found.")
+    return nil
+  end
   local data = {
     system = system_prompt,
     messages = { { role = 'user', content = prompt } },
@@ -75,6 +79,10 @@ end
 function M.make_openai_spec_curl_args(opts, prompt, system_prompt)
   local url = opts.url
   local api_key = opts.api_key_name and get_api_key(opts.api_key_name)
+  if not api_key then
+    print("API key not found.")
+    return nil
+  end
   local data = {
     messages = { { role = 'system', content = system_prompt }, { role = 'user', content = prompt } },
     model = opts.model,
@@ -129,7 +137,11 @@ end
 
 function M.handle_anthropic_spec_data(data_stream, event_state)
   if event_state == 'content_block_delta' then
-    local json = vim.json.decode(data_stream)
+    local json, err = pcall(vim.json.decode, data_stream)
+    if not json then
+      print("Error decoding JSON: " .. err)
+      return
+    end
     if json.delta and json.delta.text then
       M.write_string_at_cursor(json.delta.text)
     end
@@ -138,7 +150,11 @@ end
 
 function M.handle_openai_spec_data(data_stream)
   if data_stream:match '"delta":' then
-    local json = vim.json.decode(data_stream)
+    local json, err = pcall(vim.json.decode, data_stream)
+    if not json then
+      print("Error decoding JSON: " .. err)
+      return
+    end
     if json.choices and json.choices[1] and json.choices[1].delta then
       local content = json.choices[1].delta.content
       if content then
@@ -156,6 +172,10 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
   local prompt = get_prompt(opts)
   local system_prompt = opts.system_prompt or 'You are a tsundere uwu anime. Yell at me for not setting my configuration for my llm plugin correctly'
   local args = make_curl_args_fn(opts, prompt, system_prompt)
+  if not args then
+    print("Failed to create curl arguments.")
+    return
+  end
   local curr_event_state = nil
 
   local function parse_and_call(line)
@@ -165,9 +185,11 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
       return
     end
     local data_match = line:match '^data: (.+)$'
-    if data_match then
-      handle_data_fn(data_match, curr_event_state)
+    if not data_match then
+      print("Received empty data from API.")
+      return
     end
+    handle_data_fn(data_match, curr_event_state)
   end
 
   if active_job then
@@ -181,7 +203,9 @@ function M.invoke_llm_and_stream_into_editor(opts, make_curl_args_fn, handle_dat
     on_stdout = function(_, out)
       parse_and_call(out)
     end,
-    on_stderr = function(_, _) end,
+    on_stderr = function(_, err)
+      print("Error in curl request: " .. err)
+    end,
     on_exit = function()
       active_job = nil
     end,
